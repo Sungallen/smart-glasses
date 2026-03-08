@@ -27,6 +27,7 @@ export default function HomePage({ userId }: HomePageProps) {
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
   const [logs, setLogs] = useState<Log[]>([]);
   const logIdCounter = useRef(Date.now());
+  const transcriptionIdCounter = useRef(Date.now());
 
   const addLog = useCallback((message: string) => {
     setLogs((prev) =>
@@ -41,113 +42,121 @@ export default function HomePage({ userId }: HomePageProps) {
     );
   }, []);
 
-  // Connect to SSE photo stream
+  const addPhoto = useCallback(
+    (payload: {
+      requestId?: string;
+      dataUrl?: string;
+      timestamp?: string | number;
+    }) => {
+      if (!payload.requestId || !payload.dataUrl) return;
+
+      setPhotos((prev) => {
+        if (prev.some((p) => p.requestId === payload.requestId)) return prev;
+        const timestamp = payload.timestamp || Date.now();
+        addLog(`Photo captured at ${new Date(timestamp).toLocaleTimeString()}`);
+
+        return [
+          {
+            id: payload.requestId,
+            requestId: payload.requestId,
+            url: payload.dataUrl,
+            timestamp: new Date(timestamp).toLocaleTimeString(),
+          },
+          ...prev,
+        ].slice(0, 6);
+      });
+    },
+    [addLog],
+  );
+
+  const addTranscription = useCallback((payload: {
+    text?: string;
+    timestamp?: string | number;
+    isFinal?: boolean;
+  }) => {
+    if (!payload.text) return;
+
+    setTranscriptions((prev) => {
+      const entry = {
+        id: transcriptionIdCounter.current++,
+        text: payload.text,
+        time: new Date(payload.timestamp || Date.now()).toLocaleTimeString(),
+        isFinal: Boolean(payload.isFinal),
+      };
+
+      if (entry.isFinal) {
+        if (prev.length > 0 && !prev[0].isFinal) {
+          const updated = [...prev];
+          updated[0] = { ...updated[0], ...entry, id: updated[0].id };
+          return updated.slice(0, 10);
+        }
+        return [entry, ...prev].slice(0, 10);
+      }
+
+      if (prev.length === 0 || prev[0].isFinal) {
+        return [entry, ...prev].slice(0, 10);
+      }
+
+      const updated = [...prev];
+      updated[0] = { ...updated[0], ...entry, id: updated[0].id };
+      return updated;
+    });
+  }, []);
+
+  // Connect to remote websocket stream
   useEffect(() => {
-    let eventSource: EventSource | null = null;
+    let socket: WebSocket | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const connect = () => {
-      try {
-        eventSource = new EventSource(
-          `/api/photo-stream?userId=${encodeURIComponent(userId)}`,
-        );
+      socket = new WebSocket(
+        `wss://allen.hardmode.ngrok.app?userId=${encodeURIComponent(userId)}`,
+      );
 
-        eventSource.onopen = () => addLog("Connected to photo stream");
+      socket.onopen = () => addLog("Connected to websocket stream");
 
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === "connected") return;
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const eventType = String(data.type || data.event || "").toLowerCase();
 
-            setPhotos((prev) => {
-              if (prev.some((p) => p.requestId === data.requestId)) return prev;
-              addLog(
-                `Photo captured at ${new Date(data.timestamp).toLocaleTimeString()}`,
-              );
-              return [
-                {
-                  id: data.requestId,
-                  requestId: data.requestId,
-                  url: data.dataUrl,
-                  timestamp: new Date(data.timestamp).toLocaleTimeString(),
-                },
-                ...prev,
-              ].slice(0, 6);
-            });
-          } catch {}
-        };
+          if (eventType.includes("photo")) {
+            addPhoto(data);
+            return;
+          }
 
-        eventSource.onerror = () => {
-          addLog("Photo stream disconnected, reconnecting...");
-          eventSource?.close();
-          setTimeout(connect, 3000);
-        };
-      } catch {
-        addLog("Failed to connect to photo stream");
-      }
+          if (eventType.includes("transcription") || data.text) {
+            addTranscription(data);
+            return;
+          }
+
+          if (eventType.includes("log") && data.message) {
+            addLog(String(data.message));
+          }
+        } catch {
+          addLog("Received non-JSON websocket payload");
+        }
+      };
+
+      socket.onclose = () => {
+        addLog("Websocket disconnected, reconnecting...");
+        reconnectTimeout = setTimeout(connect, 3000);
+      };
+
+      socket.onerror = () => {
+        addLog("Websocket connection error");
+      };
     };
 
     connect();
-    return () => eventSource?.close();
-  }, [addLog, userId]);
 
-  // Connect to SSE transcription stream
-  useEffect(() => {
-    let eventSource: EventSource | null = null;
-    let idCounter = Date.now();
-
-    const connect = () => {
-      try {
-        eventSource = new EventSource(
-          `/api/transcription-stream?userId=${encodeURIComponent(userId)}`,
-        );
-
-        eventSource.onopen = () => addLog("Connected to transcription stream");
-
-        eventSource.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === "connected") return;
-
-            setTranscriptions((prev) => {
-              const entry = {
-                id: idCounter++,
-                text: data.text,
-                time: new Date(data.timestamp).toLocaleTimeString(),
-                isFinal: data.isFinal,
-              };
-
-              if (data.isFinal) {
-                if (prev.length > 0 && !prev[0].isFinal) {
-                  const updated = [...prev];
-                  updated[0] = { ...updated[0], ...entry, id: updated[0].id };
-                  return updated.slice(0, 10);
-                }
-                return [entry, ...prev].slice(0, 10);
-              } else {
-                if (prev.length === 0 || prev[0].isFinal) {
-                  return [entry, ...prev].slice(0, 10);
-                }
-                const updated = [...prev];
-                updated[0] = { ...updated[0], ...entry, id: updated[0].id };
-                return updated;
-              }
-            });
-          } catch {}
-        };
-
-        eventSource.onerror = () => {
-          addLog("Transcription stream disconnected, reconnecting...");
-          eventSource?.close();
-          setTimeout(connect, 3000);
-        };
-      } catch {
-        addLog("Failed to connect to transcription stream");
+    return () => {
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
       }
+      socket?.close();
     };
-
-    connect();
-    return () => eventSource?.close();
-  }, [addLog, userId]);
+  }, [addLog, addPhoto, addTranscription, userId]);
 
   return (
     <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
