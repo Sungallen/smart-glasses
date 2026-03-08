@@ -21,6 +21,8 @@ interface HomePageProps {
   userId: string;
 }
 
+const FRAME_INTERVAL_MS = 1000;
+
 export default function HomePage({ userId }: HomePageProps) {
   const { isDarkMode, toggleTheme } = useTheme();
   const [photos, setPhotos] = useState<Photo[]>([]);
