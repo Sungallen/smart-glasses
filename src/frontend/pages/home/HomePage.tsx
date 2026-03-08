@@ -48,11 +48,9 @@ export default function HomePage({ userId }: HomePageProps) {
     (payload: {
       requestId?: string;
       dataUrl?: string;
-      imageDataUrl?: string;
       timestamp?: string | number;
     }) => {
-      const dataUrl = payload.dataUrl || payload.imageDataUrl;
-      if (!payload.requestId || !dataUrl) return;
+      if (!payload.requestId || !payload.dataUrl) return;
 
       setPhotos((prev) => {
         if (prev.some((p) => p.requestId === payload.requestId)) return prev;
@@ -63,7 +61,7 @@ export default function HomePage({ userId }: HomePageProps) {
           {
             id: payload.requestId,
             requestId: payload.requestId,
-            url: dataUrl,
+            url: payload.dataUrl,
             timestamp: new Date(timestamp).toLocaleTimeString(),
           },
           ...prev,
@@ -107,92 +105,27 @@ export default function HomePage({ userId }: HomePageProps) {
     });
   }, []);
 
-  // Connect to remote websocket and start frame uploads when connected
+  // Connect to remote websocket stream
   useEffect(() => {
     let socket: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-    let frameInterval: ReturnType<typeof setInterval> | null = null;
-    let isCapturingFrame = false;
-
-    const stopFrameStreaming = () => {
-      if (frameInterval) {
-        clearInterval(frameInterval);
-        frameInterval = null;
-      }
-    };
-
-    const startFrameStreaming = () => {
-      stopFrameStreaming();
-
-      const streamFrame = async () => {
-        if (!socket || socket.readyState !== WebSocket.OPEN || isCapturingFrame) {
-          return;
-        }
-
-        isCapturingFrame = true;
-
-        try {
-          const response = await fetch("/api/capture-photo", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ userId }),
-          });
-
-          if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            const errorMessage =
-              typeof errorData.error === "string"
-                ? errorData.error
-                : `HTTP ${response.status}`;
-            addLog(`Frame capture failed: ${errorMessage}`);
-            return;
-          }
-
-          const frame = await response.json();
-          if (!frame?.requestId || !frame?.imageDataUrl) {
-            addLog("Frame capture failed: invalid payload from /api/capture-photo");
-            return;
-          }
-
-          addPhoto(frame);
-
-          socket.send(
-            JSON.stringify({
-              type: "photo-frame",
-              userId,
-              requestId: frame.requestId,
-              timestamp: frame.timestamp,
-              imageDataUrl: frame.imageDataUrl,
-            }),
-          );
-        } catch (error) {
-          addLog(`Frame capture failed: ${String(error)}`);
-        } finally {
-          isCapturingFrame = false;
-        }
-      };
-
-      streamFrame();
-      frameInterval = setInterval(streamFrame, FRAME_INTERVAL_MS);
-      addLog("Started camera frame streaming to websocket");
-    };
 
     const connect = () => {
       socket = new WebSocket(
         `wss://allen.hardmode.ngrok.app?userId=${encodeURIComponent(userId)}`,
       );
 
-      socket.onopen = () => {
-        addLog("Connected to websocket stream");
-        startFrameStreaming();
-      };
+      socket.onopen = () => addLog("Connected to websocket stream");
 
       socket.onmessage = (event) => {
         try {
-          if (typeof event.data !== "string") return;
-
           const data = JSON.parse(event.data);
           const eventType = String(data.type || data.event || "").toLowerCase();
+
+          if (eventType.includes("photo")) {
+            addPhoto(data);
+            return;
+          }
 
           if (eventType.includes("transcription") || data.text) {
             addTranscription(data);
@@ -201,11 +134,6 @@ export default function HomePage({ userId }: HomePageProps) {
 
           if (eventType.includes("log") && data.message) {
             addLog(String(data.message));
-            return;
-          }
-
-          if (eventType === "ack" && data.requestId) {
-            addLog(`Frame uploaded: ${data.requestId}`);
           }
         } catch {
           addLog("Received non-JSON websocket payload");
@@ -213,7 +141,6 @@ export default function HomePage({ userId }: HomePageProps) {
       };
 
       socket.onclose = () => {
-        stopFrameStreaming();
         addLog("Websocket disconnected, reconnecting...");
         reconnectTimeout = setTimeout(connect, 3000);
       };
@@ -226,7 +153,6 @@ export default function HomePage({ userId }: HomePageProps) {
     connect();
 
     return () => {
-      stopFrameStreaming();
       if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
       }
