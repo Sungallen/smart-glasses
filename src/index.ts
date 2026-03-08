@@ -8,6 +8,7 @@
 import { CameraApp } from "./server/CameraApp";
 import { api } from "./server/routes/routes";
 import { createMentraAuthRoutes } from "@mentra/sdk";
+import { relayManager } from "./server/manager/RelayManager";
 import indexHtml from "./frontend/index.html";
 
 // Configuration from environment
@@ -105,6 +106,7 @@ console.log("");
 // Graceful shutdown
 const shutdown = async () => {
   console.log("\n🛑 Shutting down Camera App...");
+  relayManager.destroy();
   await app.stop();
   console.log("👋 Goodbye!");
   process.exit(0);

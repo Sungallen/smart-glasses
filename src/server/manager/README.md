@@ -10,5 +10,6 @@ Per-user manager classes. Each manager handles one responsibility and is instant
 | `AudioManager`           | Text-to-speech and audio stop                       |
 | `StorageManager`         | Theme preferences via MentraOS Simple Storage       |
 | `InputManager`           | Button presses and touchpad gestures                |
+| `RelayManager`           | Outbound websocket relay publishing                 |
 
 Every manager (except `SessionManager`) receives a back-reference to its `User` so it can access `this.user.appSession` and `this.user.userId`.
