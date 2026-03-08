@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Camera, Zap, Terminal, Moon, Sun } from "lucide-react";
 import {
   Badge,
+  Button,
   Switch,
   Tabs,
   TabsList,
@@ -28,8 +29,12 @@ export default function HomePage({ userId }: HomePageProps) {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
   const [logs, setLogs] = useState<Log[]>([]);
+  const [isPublishing, setIsPublishing] = useState(false);
   const logIdCounter = useRef(Date.now());
   const transcriptionIdCounter = useRef(Date.now());
+  const publishSocketRef = useRef<WebSocket | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
 
   const addLog = useCallback((message: string) => {
     setLogs((prev) =>
@@ -105,6 +110,95 @@ export default function HomePage({ userId }: HomePageProps) {
     });
   }, []);
 
+  const stopPublishing = useCallback(() => {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+
+    for (const track of mediaStreamRef.current?.getTracks() || []) {
+      track.stop();
+    }
+    mediaStreamRef.current = null;
+
+    publishSocketRef.current?.close();
+    publishSocketRef.current = null;
+
+    setIsPublishing(false);
+  }, []);
+
+  const startPublishing = useCallback(async () => {
+    if (isPublishing) return;
+
+    try {
+      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${wsProtocol}//${window.location.hostname}:6000/publish`);
+      publishSocketRef.current = ws;
+
+      ws.onopen = async () => {
+        addLog("Publisher connected to relay websocket");
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+          mediaStreamRef.current = stream;
+
+          const recorder = new MediaRecorder(stream, {
+            mimeType: "video/webm;codecs=vp8",
+          });
+          mediaRecorderRef.current = recorder;
+
+          recorder.ondataavailable = async (event) => {
+            if (!event.data || event.data.size === 0) return;
+            if (ws.readyState !== WebSocket.OPEN) return;
+
+            const chunk = await event.data.arrayBuffer();
+            ws.send(chunk);
+          };
+
+          recorder.onerror = () => {
+            addLog("MediaRecorder error while streaming");
+            stopPublishing();
+          };
+
+          recorder.start(FRAME_INTERVAL_MS);
+          setIsPublishing(true);
+          addLog("Started publishing webcam stream");
+        } catch {
+          addLog("Failed to access webcam for publishing");
+          stopPublishing();
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data !== "string") return;
+
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === "error" && payload.error) {
+            addLog(`Publisher error: ${payload.error}`);
+          }
+        } catch {
+          // Relay may send non-JSON payloads; ignore.
+        }
+      };
+
+      ws.onclose = () => {
+        if (isPublishing) {
+          addLog("Publisher socket closed");
+        }
+        stopPublishing();
+      };
+
+      ws.onerror = () => {
+        addLog("Publisher websocket error");
+      };
+    } catch {
+      addLog("Unable to initialize publisher websocket");
+      stopPublishing();
+    }
+  }, [addLog, isPublishing, stopPublishing]);
+
   // Connect to remote websocket stream
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -160,6 +254,13 @@ export default function HomePage({ userId }: HomePageProps) {
     };
   }, [addLog, addPhoto, addTranscription, userId]);
 
+  useEffect(
+    () => () => {
+      stopPublishing();
+    },
+    [stopPublishing],
+  );
+
   return (
     <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
       {/* Header */}
@@ -188,6 +289,24 @@ export default function HomePage({ userId }: HomePageProps) {
 
       {/* Photo Stream */}
       <PhotoStream photos={photos} />
+
+      <div className="flex justify-end">
+        <Button
+          size="sm"
+          variant={isPublishing ? "destructive" : "default"}
+          onClick={() => {
+            if (isPublishing) {
+              stopPublishing();
+              addLog("Stopped publishing webcam stream");
+              return;
+            }
+
+            void startPublishing();
+          }}
+        >
+          {isPublishing ? "Stop publishing" : "Start publishing"}
+        </Button>
+      </div>
 
       {/* Audio Controls */}
       <AudioControls userId={userId} onLog={addLog} />
