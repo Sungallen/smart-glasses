@@ -45,6 +45,7 @@ MentraOS install links: [mentra.glass/install](https://mentra.glass/install)
      PORT=3000
      PACKAGE_NAME=com.yourName.yourAppName
      MENTRAOS_API_KEY=your_api_key_from_console
+     RELAY_WS_URL=ws://127.0.0.1:6000/publish
      ```
    * Make sure the `PACKAGE_NAME` matches what you registered in the MentraOS Console
    * Get your `API_KEY` from the MentraOS Developer Console

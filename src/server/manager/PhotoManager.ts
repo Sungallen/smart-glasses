@@ -1,4 +1,5 @@
 import type { User } from "../session/User";
+import { relayManager } from "./RelayManager";
 
 export interface StoredPhoto {
   requestId: string;
@@ -52,7 +53,7 @@ export class PhotoManager {
   /** Push a photo to all connected SSE clients */
   broadcastPhoto(photo: StoredPhoto): void {
     const base64Data = photo.buffer.toString("base64");
-    const payload = JSON.stringify({
+    const payload = {
       requestId: photo.requestId,
       timestamp: photo.timestamp.getTime(),
       mimeType: photo.mimeType,
@@ -61,11 +62,25 @@ export class PhotoManager {
       userId: photo.userId,
       base64: base64Data,
       dataUrl: `data:${photo.mimeType};base64,${base64Data}`,
+    };
+
+    relayManager.publishPhoto({
+      type: "photo",
+      source: "glasses",
+      requestId: payload.requestId,
+      timestamp: payload.timestamp,
+      mimeType: payload.mimeType,
+      filename: payload.filename,
+      size: payload.size,
+      userId: payload.userId,
+      dataUrl: payload.dataUrl,
     });
+
+    const serializedPayload = JSON.stringify(payload);
 
     for (const client of this.sseClients) {
       try {
-        client.write(payload);
+        client.write(serializedPayload);
       } catch {
         this.sseClients.delete(client);
       }

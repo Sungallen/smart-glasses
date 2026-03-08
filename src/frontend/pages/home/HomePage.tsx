@@ -33,8 +33,7 @@ export default function HomePage({ userId }: HomePageProps) {
   const logIdCounter = useRef(Date.now());
   const transcriptionIdCounter = useRef(Date.now());
   const publishSocketRef = useRef<WebSocket | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const publishIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const addLog = useCallback((message: string) => {
     setLogs((prev) =>
@@ -111,13 +110,10 @@ export default function HomePage({ userId }: HomePageProps) {
   }, []);
 
   const stopPublishing = useCallback(() => {
-    mediaRecorderRef.current?.stop();
-    mediaRecorderRef.current = null;
-
-    for (const track of mediaStreamRef.current?.getTracks() || []) {
-      track.stop();
+    if (publishIntervalRef.current) {
+      clearInterval(publishIntervalRef.current);
+      publishIntervalRef.current = null;
     }
-    mediaStreamRef.current = null;
 
     publishSocketRef.current?.close();
     publishSocketRef.current = null;
@@ -136,38 +132,54 @@ export default function HomePage({ userId }: HomePageProps) {
       ws.onopen = async () => {
         addLog("Publisher connected to relay websocket");
 
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: false,
-          });
-          mediaStreamRef.current = stream;
+        const publishLatestGlassesPhoto = async () => {
+          try {
+            const response = await fetch("/api/capture-photo", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ userId }),
+            });
 
-          const recorder = new MediaRecorder(stream, {
-            mimeType: "video/webm;codecs=vp8",
-          });
-          mediaRecorderRef.current = recorder;
+            if (!response.ok) {
+              const payload = await response.json().catch(() => ({}));
+              const errorMessage =
+                typeof payload.error === "string"
+                  ? payload.error
+                  : `Capture request failed (${response.status})`;
+              addLog(`Failed to capture glasses photo: ${errorMessage}`);
+              return;
+            }
 
-          recorder.ondataavailable = async (event) => {
-            if (!event.data || event.data.size === 0) return;
+            const payload = await response.json();
+            if (!payload.imageDataUrl || !payload.requestId) {
+              addLog("Capture response missing image payload");
+              return;
+            }
+
             if (ws.readyState !== WebSocket.OPEN) return;
 
-            const chunk = await event.data.arrayBuffer();
-            ws.send(chunk);
-          };
+            ws.send(
+              JSON.stringify({
+                type: "photo",
+                requestId: payload.requestId,
+                timestamp: payload.timestamp ?? Date.now(),
+                dataUrl: payload.imageDataUrl,
+                userId,
+                source: "glasses",
+              }),
+            );
+          } catch {
+            addLog("Failed to capture glasses photo for publishing");
+          }
+        };
 
-          recorder.onerror = () => {
-            addLog("MediaRecorder error while streaming");
-            stopPublishing();
-          };
+        await publishLatestGlassesPhoto();
+        publishIntervalRef.current = setInterval(() => {
+          void publishLatestGlassesPhoto();
+        }, FRAME_INTERVAL_MS);
 
-          recorder.start(FRAME_INTERVAL_MS);
-          setIsPublishing(true);
-          addLog("Started publishing webcam stream");
-        } catch {
-          addLog("Failed to access webcam for publishing");
-          stopPublishing();
-        }
+        setIsPublishing(true);
+        addLog("Started publishing glasses photos");
       };
 
       ws.onmessage = (event) => {
@@ -297,14 +309,14 @@ export default function HomePage({ userId }: HomePageProps) {
           onClick={() => {
             if (isPublishing) {
               stopPublishing();
-              addLog("Stopped publishing webcam stream");
+              addLog("Stopped publishing glasses photos");
               return;
             }
 
             void startPublishing();
           }}
         >
-          {isPublishing ? "Stop publishing" : "Start publishing"}
+          {isPublishing ? "Stop publishing" : "Start publishing glasses"}
         </Button>
       </div>
 
